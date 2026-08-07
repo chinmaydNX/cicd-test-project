@@ -20,17 +20,25 @@ pipeline {
 
   stages {
     stage('Checkout') {
-      steps { checkout scm }
+      steps {
+        // Drop leftover scanner binaries from prior builds (e.g. ./syft) so they
+        // are not cataloged as Go components of this JS app.
+        deleteDir()
+        checkout scm
+      }
     }
 
     stage('Fetch nxsbom CLI') {
       steps {
         sh '''
           set -e
-          mkdir -p bin
-          curl -fSL -o bin/nxsbom "$NXRADAR_CLI_URL"
-          chmod +x bin/nxsbom
-          ./bin/nxsbom --version || ./bin/nxsbom --help | head -5
+          # Keep tools OUTSIDE the scanned project tree (not ./bin or ./syft).
+          TOOLS_DIR="${WORKSPACE_TMP:-/tmp}/nxradar-cli-${BUILD_TAG}"
+          mkdir -p "$TOOLS_DIR"
+          curl -fSL -o "$TOOLS_DIR/nxsbom" "$NXRADAR_CLI_URL"
+          chmod +x "$TOOLS_DIR/nxsbom"
+          "$TOOLS_DIR/nxsbom" --version || "$TOOLS_DIR/nxsbom" --help | head -5
+          echo "$TOOLS_DIR" > .nxradar-tools-dir
         '''
       }
     }
@@ -39,7 +47,12 @@ pipeline {
       steps {
         sh '''
           set -e
-          export PATH="$PWD/bin:$PATH"
+          TOOLS_DIR=$(cat .nxradar-tools-dir)
+          export PATH="$TOOLS_DIR:$PATH"
+
+          # Belt-and-suspenders: never leave syft/nxsbom binaries in the scan root
+          rm -f ./syft ./nxsbom
+          rm -rf ./bin
 
           # Config shape required by nxsbom CLI 1.0.1 (same fields as agent bundle config.json).
           # encPublicKey is a dummy 32-byte key — we upload plaintext JSON (not .enc) via SA API key.
@@ -119,9 +132,11 @@ EOF
               "$NXRADAR_UPLOAD_URL/api/v1/scans/$SBOM_ID/status" || echo 000)
             BODY=$(cat /tmp/nxradar-status.json 2>/dev/null || true)
             echo "poll $i status HTTP=$CODE body=$BODY"
-            # Match Complete / completed / Failed / failed in response
-            echo "$BODY" | grep -qiE '"[^"]*[Cc]omplete[^"]*"' && echo "PROCESSING_COMPLETE" && exit 0
-            echo "$BODY" | grep -qiE '"[^"]*[Ff]ailed[^"]*"' && echo "PROCESSING_FAILED" && exit 1
+
+            # Spec states from upload-server mapToSpecState: COMPLETED | FAILED | EVALUATING | ...
+            echo "$BODY" | grep -qE '"state"[[:space:]]*:[[:space:]]*"FAILED"' && echo "PROCESSING_FAILED" && exit 1
+            echo "$BODY" | grep -qE '"state"[[:space:]]*:[[:space:]]*"COMPLETED"' && echo "PROCESSING_COMPLETE" && exit 0
+
             sleep 15
           done
           echo "Timed out waiting for SBOM processing"
@@ -136,7 +151,8 @@ EOF
         sh '''
           set -e
           SBOM_ID=$(cat scan_id.txt)
-          echo "Polling policy decision for $SBOM_ID ..."
+          echo "Polling policy decision for $SBOM_ID (fail-closed) ..."
+          # ~40 * 15s ≈ 10 minutes — matches prior gate wait budget
           for i in $(seq 1 40); do
             CODE=$(curl -sS -o nxradar-decision.json -w "%{http_code}" \
               -H "Authorization: Bearer $NXRADAR_API_KEY" \
@@ -145,28 +161,25 @@ EOF
             BODY=$(cat nxradar-decision.json 2>/dev/null || true)
             echo "poll $i decision HTTP=$CODE body=$BODY"
 
-            # Still pending / evaluating
-            echo "$BODY" | grep -qiE 'PENDING|EVALUATING|PROCESSING|UNKNOWN' && sleep 15 && continue
-
-            # Fail gate
-            if echo "$BODY" | grep -qE '"decision"[[:space:]]*:[[:space:]]*"FAIL"|"compliant"[[:space:]]*:[[:space:]]*false'; then
+            # Explicit non-compliant → fail the build
+            if echo "$BODY" | grep -qE '"compliant"[[:space:]]*:[[:space:]]*false'; then
               echo "POLICY_GATE_FAILED"
               exit 1
             fi
 
-            # Pass / warn / no policy
-            if echo "$BODY" | grep -qE '"decision"[[:space:]]*:[[:space:]]*"(PASS|WARN|NOT_APPLICABLE)"|"compliant"[[:space:]]*:[[:space:]]*true'; then
+            # Explicit compliant → pass
+            if echo "$BODY" | grep -qE '"compliant"[[:space:]]*:[[:space:]]*true'; then
               echo "POLICY_GATE_OK"
               exit 0
             fi
 
-            # If COMPLETED without FAIL, accept
-            echo "$BODY" | grep -qiE 'COMPLETED|READY|Complete' && echo "POLICY_GATE_OK" && exit 0
-
+            # No boolean yet (decision:null while EVALUATING / PROCESSING) — keep polling
             sleep 15
           done
-          echo "Timed out waiting for policy decision — archiving last response"
-          exit 0
+
+          # Fail closed: never treat a missing decision as a pass
+          echo "POLICY_GATE_TIMEOUT — no compliant boolean after polling; failing build"
+          exit 1
         '''
       }
     }
