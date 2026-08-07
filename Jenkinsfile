@@ -24,7 +24,8 @@ pipeline {
         sh '''
           set -e
           curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b .
-          ./syft . -o cyclonedx-json > sbom.json
+          # Pin CycloneDX to 1.6 — default syft emits 1.7 which sbom-utility v0.18 rejects
+          ./syft . -o cyclonedx-json@1.6 > sbom.json
 
           # First run: creates group (if missing) + application under this client.
           # Later runs: reuses the same app and uploads a new version.
