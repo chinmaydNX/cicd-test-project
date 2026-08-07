@@ -31,7 +31,7 @@ pipeline {
           HTTP_CODE=$(curl -sS -o /tmp/nxradar-upload.json -w "%{http_code}" -X POST \
             -H "Authorization: Bearer $NXRADAR_API_KEY" \
             -H "x-org-id: $NXRADAR_ORG_ID" \
-            -F "sbom=@sbom.json" \
+            -F "artifact=@sbom.json" \
             -F "clientId=$NXRADAR_CLIENT_ID" \
             -F "applicationName=$APP_NAME" \
             -F "applicationVersion=${BUILD_NUMBER}" \
