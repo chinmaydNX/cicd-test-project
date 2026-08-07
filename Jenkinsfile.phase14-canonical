@@ -1,0 +1,63 @@
+pipeline {
+  agent any
+  environment {
+    NXRADAR_API_KEY    = credentials('nxradar-api-key')
+    NXRADAR_ORG_ID     = '72OO5R9SCO'
+    NXRADAR_UPLOAD_URL = 'http://172.30.7.59:7007'
+    // Where to fetch the nxsbom CLI (Phase 14 — configurable source).
+  }
+  stages {
+    // ── Checkout (REQUIRED) ───────────────────────────────────────
+    // The SBOM scan runs against the workspace (`--path .`), so your
+    // source MUST be checked out first. Checkout is your pipeline's
+    // responsibility — uncomment the stage below, or replace it with
+    // your own existing SCM step:
+    //
+    // stage('Checkout') {
+    //   steps { git branch: 'master', url: 'https://github.com/chinmaydNX/cicd-test-project.git' }
+    // }
+    stage('Fetch nxsbom CLI') {
+      steps {
+        sh '''
+          set -e
+          mkdir -p bin
+          curl -fSL -o bin/nxsbom "http://172.30.7.59:7099/nxsbom"
+          chmod +x bin/nxsbom
+          ./bin/nxsbom --version
+        '''
+      }
+    }
+    stage('Security: SBOM scan') {
+      steps {
+        sh '''
+          set -e
+          export PATH="$PWD/bin:$PATH"
+          COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo manual)
+          # Per-build idempotency key. The default CLI key collapses to a
+          # constant when commit/version are unset, so two builds collide
+          # (HTTP 409 "Idempotency-Key already used …"). BUILD_TAG is
+          # unique per build yet stable on a build replay → true retry
+          # idempotency without cross-build false 409s. Sanitised to the
+          # server-allowed charset.
+          IDEM=$(printf '%s' "${BUILD_TAG:-${JOB_NAME:-nxsbom}-${BUILD_NUMBER:-0}-$COMMIT}" | tr -c 'A-Za-z0-9_.:-' '-' | cut -c1-64)
+          nxsbom cicd scan --app 'cicd-test-project' --env 'Dev' --criticality 'Medium' --path . \
+            --app-version "$COMMIT" \
+            --commit "$(git rev-parse HEAD 2>/dev/null || true)" \
+            --branch "${GIT_BRANCH:-master}" \
+            --idempotency-key "$IDEM" \
+            --fail-on 'critical' \
+            --format sarif --output nxradar-sbom.sarif \
+            --format junit --output nxradar-sbom.xml \
+            --format json  --output nxradar-decision.json
+        '''
+      }
+      post {
+        always {
+          recordIssues tools: [sarif(pattern: 'nxradar-sbom*.sarif')]
+          junit testResults: 'nxradar-sbom*.xml', allowEmptyResults: true
+          archiveArtifacts artifacts: 'nxradar-sbom*,nxradar-decision.json', allowEmptyArchive: true
+        }
+      }
+    }
+  }
+}
