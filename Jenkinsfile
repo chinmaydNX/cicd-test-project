@@ -28,7 +28,7 @@ pipeline {
 
           # First run: creates group (if missing) + application under this client.
           # Later runs: reuses the same app and uploads a new version.
-          RESPONSE=$(curl -sf -X POST \
+          HTTP_CODE=$(curl -sS -o /tmp/nxradar-upload.json -w "%{http_code}" -X POST \
             -H "Authorization: Bearer $NXRADAR_API_KEY" \
             -H "x-org-id: $NXRADAR_ORG_ID" \
             -F "sbom=@sbom.json" \
@@ -45,10 +45,15 @@ pipeline {
             -F "pipelineId=${BUILD_TAG}" \
             "$NXRADAR_UPLOAD_URL/api/v1/scans/upload")
 
-          echo "Upload response: $RESPONSE"
-          SBOM_ID=$(echo "$RESPONSE" | jq -r '.data.sbomId // .data.scanId // empty')
-          AUTO=$(echo "$RESPONSE" | jq -r '.data.autoCreated // false')
-          echo "scanId=$SBOM_ID autoCreated=$AUTO"
+          echo "HTTP $HTTP_CODE"
+          echo "Upload response:"
+          cat /tmp/nxradar-upload.json
+          echo
+          test "$HTTP_CODE" = "200" -o "$HTTP_CODE" = "201" -o "$HTTP_CODE" = "202"
+
+          # jq is not in the Jenkins image — parse ids with grep
+          SBOM_ID=$(grep -oE '"sbomId"[[:space:]]*:[[:space:]]*"[^"]+"|"scanId"[[:space:]]*:[[:space:]]*"[^"]+"' /tmp/nxradar-upload.json | head -1 | grep -oE '"[^"]+"$' | tr -d '"')
+          echo "scanId=$SBOM_ID"
           test -n "$SBOM_ID"
         '''
       }
