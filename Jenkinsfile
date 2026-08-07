@@ -3,8 +3,9 @@ pipeline {
   environment {
     NXRADAR_API_KEY    = credentials('nxradar-api-key')
     NXRADAR_ORG_ID     = '72OO5R9SCO'
-    // Docker Jenkins → host upload-server. Use http://127.0.0.1:7007 if Jenkins is on the host.
-    NXRADAR_UPLOAD_URL = 'http://host.docker.internal:7007'
+    // Jenkins runs in Docker on WSL — use the WSL eth0 IP (not localhost / host.docker.internal).
+    // If builds fail with curl exit 7 after a reboot, refresh with: hostname -I | awk '{print $1}'
+    NXRADAR_UPLOAD_URL = 'http://172.30.7.59:7007'
     // Required: Client ObjectId from NxRadar UI (24-char hex)
     NXRADAR_CLIENT_ID  = '693bde842d84d0e636c80b89'
     // Auto-create: no APP_ID needed
