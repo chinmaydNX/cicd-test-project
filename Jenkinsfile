@@ -41,11 +41,17 @@ pipeline {
           set -e
           export PATH="$PWD/bin:$PATH"
 
-          # Minimal config for local generate (no --sync; upload is the next stage)
+          # Config shape required by nxsbom CLI 1.0.1 (same fields as agent bundle config.json).
+          # encPublicKey is a dummy 32-byte key — we upload plaintext JSON (not .enc) via SA API key.
+          ENC_KEY=$(dd if=/dev/urandom bs=32 count=1 2>/dev/null | base64 -w0)
           cat > config.json <<EOF
 {
   "orgId": "$NXRADAR_ORG_ID",
-  "serverBaseUrl": "$NXRADAR_UPLOAD_URL"
+  "agentId": "agt_jenkins_${JOB_NAME}",
+  "keyId": "agt_jenkins_${JOB_NAME}-k1",
+  "serverBaseUrl": "$NXRADAR_UPLOAD_URL",
+  "encPublicKey": "$ENC_KEY",
+  "defaultTool": "syft"
 }
 EOF
 
@@ -57,12 +63,10 @@ EOF
             -r "$CRITICALITY" \
             -e "$ENVIRONMENT" \
             -c ./config.json \
-            -o sbom.raw.json
+            -o sbom.json
 
-          # Pin CycloneDX to 1.6 — sbom-utility v0.18 rejects Syft's default 1.7
-          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b .
-          ./syft . -o cyclonedx-json@1.6 > sbom.json
-          echo "SBOM ready: $(wc -c < sbom.json) bytes, specVersion=$(grep -oE '"specVersion"[[:space:]]*:[[:space:]]*"[^"]+"' sbom.json | head -1)"
+          echo "SBOM ready: $(wc -c < sbom.json) bytes"
+          grep -oE '"specVersion"[[:space:]]*:[[:space:]]*"[^"]+"' sbom.json | head -1 || true
         '''
       }
     }
