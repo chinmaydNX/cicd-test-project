@@ -1,5 +1,4 @@
 # Mirrors cicd-test-project/Jenkinsfile (CLI 1.0.1: generate-new + curl upload).
-# Requires self-hosted runner on the same LAN as upload/CLI hosts.
 image: atlassian/default-image:4
 
 pipelines:
@@ -10,42 +9,40 @@ pipelines:
           - self.hosted
           - linux
         script:
-          - export NXRADAR_ORG_ID="${NXRADAR_ORG_ID:-72OO5R9SCO}"
-          - export NXRADAR_UPLOAD_URL="${NXRADAR_UPLOAD_URL:-http://172.30.7.59:7007}"
-          - export NXRADAR_CLI_URL="${NXRADAR_CLI_URL:-http://172.30.7.59:7099/nxsbom}"
-          - export NXRADAR_CLIENT_ID="${NXRADAR_CLIENT_ID:-693bde842d84d0e636c80b89}"
-          - export APP_NAME="${APP_NAME:-cicd-test-project}"
-          - export GROUP_NAME="${GROUP_NAME:-jenkins-cicd-test}"
-          - export SUPPLIER="${SUPPLIER:-Internal}"
-          - export ENVIRONMENT="${ENVIRONMENT:-Dev}"
-          - export CRITICALITY="${CRITICALITY:-Medium}"
-          - export ENABLE_POLICY_GATE="${ENABLE_POLICY_GATE:-true}"
           - |
-            set -e
-            echo "DEBUG upload=$NXRADAR_UPLOAD_URL cli=$NXRADAR_CLI_URL"
+            set -eux
+            export NXRADAR_ORG_ID="${NXRADAR_ORG_ID:-72OO5R9SCO}"
+            export NXRADAR_UPLOAD_URL="${NXRADAR_UPLOAD_URL:-http://172.30.7.59:7007}"
+            export NXRADAR_CLI_URL="${NXRADAR_CLI_URL:-http://172.30.7.59:7099/nxsbom}"
+            export NXRADAR_CLIENT_ID="${NXRADAR_CLIENT_ID:-693bde842d84d0e636c80b89}"
+            export APP_NAME="${APP_NAME:-cicd-test-project}"
+            export GROUP_NAME="${GROUP_NAME:-jenkins-cicd-test}"
+            export SUPPLIER="${SUPPLIER:-Internal}"
+            export ENVIRONMENT="${ENVIRONMENT:-Dev}"
+            export CRITICALITY="${CRITICALITY:-Medium}"
+            export ENABLE_POLICY_GATE="${ENABLE_POLICY_GATE:-true}"
+
+            echo "===== ENV CHECK ====="
+            env | sort | grep -E '^NXRADAR_|^BITBUCKET_|^APP_|^ENABLE_' | sed -E 's/(NXRADAR_API_KEY=).*/\1***MASKED***/' || true
             if [ -z "${NXRADAR_API_KEY:-}" ]; then
-              echo "ERROR: NXRADAR_API_KEY is not set."
-              echo "Add it under Repository settings → Repository variables (Secured)."
-              echo "Use the same nxr_* key as Jenkins credential nxradar-api-key."
+              echo "ERROR: NXRADAR_API_KEY is empty in this step."
+              echo "Fix: Repository settings → Repository variables"
+              echo "  Name must be exactly: NXRADAR_API_KEY"
+              echo "  Secured: ON"
+              echo "  Scope: this repository (not only a Deployment environment)"
               exit 1
             fi
-            echo "DEBUG NXRADAR_API_KEY is set (len=${#NXRADAR_API_KEY})"
-          # Fetch CLI into /tmp (writable; mirrors Jenkins WORKSPACE_TMP)
-          - |
-            set -e
+            echo "NXRADAR_API_KEY length=${#NXRADAR_API_KEY}"
+
+            echo "===== FETCH CLI ====="
             TOOLS_DIR="/tmp/nxradar-cli-${BITBUCKET_BUILD_NUMBER}"
             mkdir -p "$TOOLS_DIR"
-            echo "Fetching CLI from $NXRADAR_CLI_URL ..."
             curl -fSL -o "$TOOLS_DIR/nxsbom" "$NXRADAR_CLI_URL"
             chmod +x "$TOOLS_DIR/nxsbom"
-            "$TOOLS_DIR/nxsbom" --version || "$TOOLS_DIR/nxsbom" --help | head -5
-            echo "$TOOLS_DIR" > .nxradar-tools-dir
+            "$TOOLS_DIR/nxsbom" --help | head -5
             export PATH="$TOOLS_DIR:$PATH"
-          # Generate SBOM (CLI 1.0.1)
-          - |
-            set -e
-            TOOLS_DIR=$(cat .nxradar-tools-dir)
-            export PATH="$TOOLS_DIR:$PATH"
+
+            echo "===== GENERATE SBOM ====="
             rm -f ./syft ./nxsbom
             rm -rf ./bin
             ENC_KEY=$(dd if=/dev/urandom bs=32 count=1 2>/dev/null | base64 -w0)
@@ -61,9 +58,8 @@ pipelines:
               -c ./config.json \
               -o sbom.json
             echo "SBOM ready: $(wc -c < sbom.json) bytes"
-          # Upload
-          - |
-            set -e
+
+            echo "===== UPLOAD ====="
             HTTP_CODE=$(curl -sS -o /tmp/nxradar-upload.json -w "%{http_code}" -X POST \
               -H "Authorization: Bearer $NXRADAR_API_KEY" \
               -H "x-org-id: $NXRADAR_ORG_ID" \
@@ -89,11 +85,8 @@ pipelines:
             test -n "$SBOM_ID"
             echo "$SBOM_ID" > scan_id.txt
             cp /tmp/nxradar-upload.json nxradar-upload-response.json
-          # Wait for processing
-          - |
-            set -e
-            SBOM_ID=$(cat scan_id.txt)
-            echo "Polling status for $SBOM_ID ..."
+
+            echo "===== POLL STATUS ====="
             for i in $(seq 1 60); do
               CODE=$(curl -sS -o /tmp/nxradar-status.json -w "%{http_code}" \
                 -H "Authorization: Bearer $NXRADAR_API_KEY" \
@@ -102,20 +95,20 @@ pipelines:
               BODY=$(cat /tmp/nxradar-status.json 2>/dev/null || true)
               echo "poll $i status HTTP=$CODE body=$BODY"
               echo "$BODY" | grep -qE '"state"[[:space:]]*:[[:space:]]*"FAILED"' && echo "PROCESSING_FAILED" && exit 1
-              echo "$BODY" | grep -qE '"state"[[:space:]]*:[[:space:]]*"COMPLETED"' && echo "PROCESSING_COMPLETE" && exit 0
+              echo "$BODY" | grep -qE '"state"[[:space:]]*:[[:space:]]*"COMPLETED"' && echo "PROCESSING_COMPLETE" && break
+              if [ "$i" -eq 60 ]; then
+                echo "Timed out waiting for SBOM processing"
+                exit 1
+              fi
               sleep 15
             done
-            echo "Timed out waiting for SBOM processing"
-            exit 1
-          # Policy gate
-          - |
-            set -e
+
             if [ "$ENABLE_POLICY_GATE" != "true" ]; then
               echo "Policy gate disabled"
               exit 0
             fi
-            SBOM_ID=$(cat scan_id.txt)
-            echo "Polling policy decision for $SBOM_ID (fail-closed) ..."
+
+            echo "===== POLICY GATE ====="
             for i in $(seq 1 40); do
               CODE=$(curl -sS -o nxradar-decision.json -w "%{http_code}" \
                 -H "Authorization: Bearer $NXRADAR_API_KEY" \
@@ -133,7 +126,7 @@ pipelines:
               fi
               sleep 15
             done
-            echo "POLICY_GATE_TIMEOUT — no compliant boolean after polling; failing build"
+            echo "POLICY_GATE_TIMEOUT"
             exit 1
         artifacts:
           - sbom.json
