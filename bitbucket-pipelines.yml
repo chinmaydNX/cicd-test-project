@@ -1,0 +1,37 @@
+image: atlassian/default-image:4
+
+pipelines:
+  default:
+    - step:
+        name: NxRadar — SBOM Scan
+        runs-on:
+          - self.hosted
+          - linux
+        script:
+          - export NXRADAR_ORG_ID="${NXRADAR_ORG_ID}"
+          - export NXRADAR_UPLOAD_URL="${NXRADAR_UPLOAD_URL}"
+          - |
+            set -e
+            mkdir -p bin
+            curl -fSL -o bin/nxsbom "$NXRADAR_CLI_URL"
+            chmod +x bin/nxsbom
+            ./bin/nxsbom --version
+          - export PATH="$PWD/bin:$PATH"
+          - |
+            set -e
+            COMMIT=$(printf '%s' "${BITBUCKET_COMMIT:-manual}" | cut -c1-7)
+            IDEM=$(printf '%s' "nxsbom-${BITBUCKET_BUILD_NUMBER:-0}-$COMMIT" | tr -c 'A-Za-z0-9_.:-' '-' | cut -c1-64)
+            nxsbom cicd scan \
+              --app 'cicd-test-project' --env 'Dev' --criticality 'Medium' --path . \
+              --app-version "$COMMIT" \
+              --commit "${BITBUCKET_COMMIT:-}" \
+              --branch "${BITBUCKET_BRANCH:-main}" \
+              --idempotency-key "$IDEM" \
+              --fail-on 'critical' \
+              --format sarif --output nxradar-sbom.sarif \
+              --format junit --output nxradar-sbom.xml \
+              --format json  --output nxradar-decision.json
+        artifacts:
+          - nxradar-sbom.sarif
+          - nxradar-sbom.xml
+          - nxradar-decision.json
