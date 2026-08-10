@@ -34,6 +34,11 @@ pipelines:
             fi
             echo "NXRADAR_API_KEY length=${#NXRADAR_API_KEY}"
 
+            # Unique per run (Bitbucket "Rerun" reuses BITBUCKET_BUILD_NUMBER → 409 otherwise)
+            COMMIT_SHORT=$(printf '%s' "${BITBUCKET_COMMIT:-manual}" | cut -c1-7)
+            export APP_VERSION="${BITBUCKET_BUILD_NUMBER}-${COMMIT_SHORT}-$(date +%s)"
+            echo "APP_VERSION=$APP_VERSION"
+
             echo "===== FETCH CLI ====="
             TOOLS_DIR="/tmp/nxradar-cli-${BITBUCKET_BUILD_NUMBER}"
             mkdir -p "$TOOLS_DIR"
@@ -51,7 +56,7 @@ pipelines:
             nxsbom generate-new \
               -t dir -p . \
               -n "$APP_NAME" \
-              -v "${BITBUCKET_BUILD_NUMBER}" \
+              -v "$APP_VERSION" \
               -s "$SUPPLIER" \
               -r "$CRITICALITY" \
               -e "$ENVIRONMENT" \
@@ -66,7 +71,7 @@ pipelines:
               -F "artifact=@sbom.json" \
               -F "clientId=$NXRADAR_CLIENT_ID" \
               -F "applicationName=$APP_NAME" \
-              -F "applicationVersion=${BITBUCKET_BUILD_NUMBER}" \
+              -F "applicationVersion=$APP_VERSION" \
               -F "groupName=$GROUP_NAME" \
               -F "supplier=$SUPPLIER" \
               -F "environment=$ENVIRONMENT" \
@@ -79,14 +84,14 @@ pipelines:
             echo "HTTP $HTTP_CODE"
             cat /tmp/nxradar-upload.json
             echo
+            cp /tmp/nxradar-upload.json nxradar-upload-response.json || true
             test "$HTTP_CODE" = "200" -o "$HTTP_CODE" = "201" -o "$HTTP_CODE" = "202"
             SBOM_ID=$(grep -oE '"sbomId"[[:space:]]*:[[:space:]]*"[^"]+"|"scanId"[[:space:]]*:[[:space:]]*"[^"]+"' /tmp/nxradar-upload.json | head -1 | grep -oE '"[^"]+"$' | tr -d '"')
             echo "scanId=$SBOM_ID"
             test -n "$SBOM_ID"
             echo "$SBOM_ID" > scan_id.txt
-            cp /tmp/nxradar-upload.json nxradar-upload-response.json
-
-            echo "===== POLL STATUS ====="
+            # also accept COMPLETED after EVALUATING once decision exists — poll status OR decision
+            echo "===== POLL STATUS / DECISION ====="
             for i in $(seq 1 60); do
               CODE=$(curl -sS -o /tmp/nxradar-status.json -w "%{http_code}" \
                 -H "Authorization: Bearer $NXRADAR_API_KEY" \
