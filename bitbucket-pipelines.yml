@@ -90,9 +90,10 @@ pipelines:
             echo "scanId=$SBOM_ID"
             test -n "$SBOM_ID"
             echo "$SBOM_ID" > scan_id.txt
-            # also accept COMPLETED after EVALUATING once decision exists — poll status OR decision
+            # Status stays EVALUATING until policy metrics land (can be >15m when DTrack is slow).
+            # Poll status + decision together: ~120 * 15s ≈ 30m budget.
             echo "===== POLL STATUS / DECISION ====="
-            for i in $(seq 1 60); do
+            for i in $(seq 1 120); do
               CODE=$(curl -sS -o /tmp/nxradar-status.json -w "%{http_code}" \
                 -H "Authorization: Bearer $NXRADAR_API_KEY" \
                 -H "x-org-id: $NXRADAR_ORG_ID" \
@@ -100,39 +101,32 @@ pipelines:
               BODY=$(cat /tmp/nxradar-status.json 2>/dev/null || true)
               echo "poll $i status HTTP=$CODE body=$BODY"
               echo "$BODY" | grep -qE '"state"[[:space:]]*:[[:space:]]*"FAILED"' && echo "PROCESSING_FAILED" && exit 1
-              echo "$BODY" | grep -qE '"state"[[:space:]]*:[[:space:]]*"COMPLETED"' && echo "PROCESSING_COMPLETE" && break
-              if [ "$i" -eq 60 ]; then
-                echo "Timed out waiting for SBOM processing"
+
+              if [ "$ENABLE_POLICY_GATE" = "true" ]; then
+                DCODE=$(curl -sS -o nxradar-decision.json -w "%{http_code}" \
+                  -H "Authorization: Bearer $NXRADAR_API_KEY" \
+                  -H "x-org-id: $NXRADAR_ORG_ID" \
+                  "$NXRADAR_UPLOAD_URL/api/v1/scans/$SBOM_ID/decision" || echo 000)
+                DBODY=$(cat nxradar-decision.json 2>/dev/null || true)
+                echo "poll $i decision HTTP=$DCODE body=$DBODY"
+                if echo "$DBODY" | grep -qE '"compliant"[[:space:]]*:[[:space:]]*false'; then
+                  echo "POLICY_GATE_FAILED"
+                  exit 1
+                fi
+                if echo "$DBODY" | grep -qE '"compliant"[[:space:]]*:[[:space:]]*true'; then
+                  echo "POLICY_GATE_OK"
+                  exit 0
+                fi
+              else
+                echo "$BODY" | grep -qE '"state"[[:space:]]*:[[:space:]]*"COMPLETED"' && echo "PROCESSING_COMPLETE" && exit 0
+              fi
+
+              if [ "$i" -eq 120 ]; then
+                echo "Timed out waiting for SBOM processing / policy decision"
                 exit 1
               fi
               sleep 15
             done
-
-            if [ "$ENABLE_POLICY_GATE" != "true" ]; then
-              echo "Policy gate disabled"
-              exit 0
-            fi
-
-            echo "===== POLICY GATE ====="
-            for i in $(seq 1 40); do
-              CODE=$(curl -sS -o nxradar-decision.json -w "%{http_code}" \
-                -H "Authorization: Bearer $NXRADAR_API_KEY" \
-                -H "x-org-id: $NXRADAR_ORG_ID" \
-                "$NXRADAR_UPLOAD_URL/api/v1/scans/$SBOM_ID/decision" || echo 000)
-              BODY=$(cat nxradar-decision.json 2>/dev/null || true)
-              echo "poll $i decision HTTP=$CODE body=$BODY"
-              if echo "$BODY" | grep -qE '"compliant"[[:space:]]*:[[:space:]]*false'; then
-                echo "POLICY_GATE_FAILED"
-                exit 1
-              fi
-              if echo "$BODY" | grep -qE '"compliant"[[:space:]]*:[[:space:]]*true'; then
-                echo "POLICY_GATE_OK"
-                exit 0
-              fi
-              sleep 15
-            done
-            echo "POLICY_GATE_TIMEOUT"
-            exit 1
         artifacts:
           - sbom.json
           - scan_id.txt
