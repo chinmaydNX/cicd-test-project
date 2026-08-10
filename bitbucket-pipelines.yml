@@ -10,7 +10,6 @@ pipelines:
           - self.hosted
           - linux
         script:
-          # Same LAN endpoints as Jenkinsfile
           - export NXRADAR_ORG_ID="${NXRADAR_ORG_ID:-72OO5R9SCO}"
           - export NXRADAR_UPLOAD_URL="${NXRADAR_UPLOAD_URL:-http://172.30.7.59:7007}"
           - export NXRADAR_CLI_URL="${NXRADAR_CLI_URL:-http://172.30.7.59:7099/nxsbom}"
@@ -21,18 +20,32 @@ pipelines:
           - export ENVIRONMENT="${ENVIRONMENT:-Dev}"
           - export CRITICALITY="${CRITICALITY:-Medium}"
           - export ENABLE_POLICY_GATE="${ENABLE_POLICY_GATE:-true}"
-          # Fetch CLI (same binary Jenkins uses)
           - |
             set -e
-            mkdir -p "$BITBUCKET_CLONE_DIR/../nxradar-cli"
-            curl -fSL -o "$BITBUCKET_CLONE_DIR/../nxradar-cli/nxsbom" "$NXRADAR_CLI_URL"
-            chmod +x "$BITBUCKET_CLONE_DIR/../nxradar-cli/nxsbom"
-            "$BITBUCKET_CLONE_DIR/../nxradar-cli/nxsbom" --version || "$BITBUCKET_CLONE_DIR/../nxradar-cli/nxsbom" --help | head -5
-            export PATH="$BITBUCKET_CLONE_DIR/../nxradar-cli:$PATH"
-          # Generate SBOM (CLI 1.0.1 — no `cicd scan`)
+            echo "DEBUG upload=$NXRADAR_UPLOAD_URL cli=$NXRADAR_CLI_URL"
+            if [ -z "${NXRADAR_API_KEY:-}" ]; then
+              echo "ERROR: NXRADAR_API_KEY is not set."
+              echo "Add it under Repository settings → Repository variables (Secured)."
+              echo "Use the same nxr_* key as Jenkins credential nxradar-api-key."
+              exit 1
+            fi
+            echo "DEBUG NXRADAR_API_KEY is set (len=${#NXRADAR_API_KEY})"
+          # Fetch CLI into /tmp (writable; mirrors Jenkins WORKSPACE_TMP)
           - |
             set -e
-            export PATH="$BITBUCKET_CLONE_DIR/../nxradar-cli:$PATH"
+            TOOLS_DIR="/tmp/nxradar-cli-${BITBUCKET_BUILD_NUMBER}"
+            mkdir -p "$TOOLS_DIR"
+            echo "Fetching CLI from $NXRADAR_CLI_URL ..."
+            curl -fSL -o "$TOOLS_DIR/nxsbom" "$NXRADAR_CLI_URL"
+            chmod +x "$TOOLS_DIR/nxsbom"
+            "$TOOLS_DIR/nxsbom" --version || "$TOOLS_DIR/nxsbom" --help | head -5
+            echo "$TOOLS_DIR" > .nxradar-tools-dir
+            export PATH="$TOOLS_DIR:$PATH"
+          # Generate SBOM (CLI 1.0.1)
+          - |
+            set -e
+            TOOLS_DIR=$(cat .nxradar-tools-dir)
+            export PATH="$TOOLS_DIR:$PATH"
             rm -f ./syft ./nxsbom
             rm -rf ./bin
             ENC_KEY=$(dd if=/dev/urandom bs=32 count=1 2>/dev/null | base64 -w0)
@@ -51,7 +64,6 @@ pipelines:
           # Upload
           - |
             set -e
-            : "${NXRADAR_API_KEY:?NXRADAR_API_KEY repo variable is required}"
             HTTP_CODE=$(curl -sS -o /tmp/nxradar-upload.json -w "%{http_code}" -X POST \
               -H "Authorization: Bearer $NXRADAR_API_KEY" \
               -H "x-org-id: $NXRADAR_ORG_ID" \
@@ -95,7 +107,7 @@ pipelines:
             done
             echo "Timed out waiting for SBOM processing"
             exit 1
-          # Policy gate (same as Jenkins ENABLE_POLICY_GATE)
+          # Policy gate
           - |
             set -e
             if [ "$ENABLE_POLICY_GATE" != "true" ]; then
@@ -127,3 +139,4 @@ pipelines:
           - sbom.json
           - scan_id.txt
           - nxradar-*.json
+          - config.json
