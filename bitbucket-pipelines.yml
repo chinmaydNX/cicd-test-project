@@ -8,8 +8,10 @@ pipelines:
           - self.hosted
           - linux
         script:
-          - export NXRADAR_ORG_ID="${NXRADAR_ORG_ID}"
-          - export NXRADAR_UPLOAD_URL="${NXRADAR_UPLOAD_URL}"
+          # Same LAN endpoints as Jenkinsfile (Docker/WSL host)
+          - export NXRADAR_ORG_ID="${NXRADAR_ORG_ID:-72OO5R9SCO}"
+          - export NXRADAR_UPLOAD_URL="${NXRADAR_UPLOAD_URL:-http://172.30.7.59:7007}"
+          - export NXRADAR_CLI_URL="${NXRADAR_CLI_URL:-http://172.30.7.59:7099/nxsbom}"
           - |
             set -e
             mkdir -p bin
