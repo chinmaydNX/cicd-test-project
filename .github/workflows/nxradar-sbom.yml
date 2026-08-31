@@ -12,6 +12,7 @@ jobs:
       NXRADAR_PROV_TOKEN: ${{ secrets.NXRADAR_PROV_TOKEN }}
       NXRADAR_ORG_ID: "72OO5R9SCO"
       NXRADAR_UPLOAD_URL: "http://127.0.0.1:7007"
+      NXRADAR_API_URL: "http://127.0.0.1:6005"
     steps:
       - uses: actions/checkout@v4
       - name: Fetch nxsbom CLI
