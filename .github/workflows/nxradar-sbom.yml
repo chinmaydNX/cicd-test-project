@@ -1,0 +1,63 @@
+# NxRadar SBOM — GitHub Actions
+# Set repository secrets (Settings → Secrets and variables → Actions):
+#   NXRADAR_PROV_TOKEN  — Provisioning token from Pipeline Identity create
+#   NXRADAR_ORG_ID / NXRADAR_UPLOAD_URL are baked in below; override via
+#   env or vars if needed. Place this file at .github/workflows/nxradar-sbom.yml
+name: NxRadar SBOM
+on: [push]
+jobs:
+  sbom:
+    runs-on: self-hosted
+    env:
+      NXRADAR_PROV_TOKEN: ${{ secrets.NXRADAR_PROV_TOKEN }}
+      NXRADAR_ORG_ID: "72OO5R9SCO"
+      NXRADAR_UPLOAD_URL: "http://127.0.0.1:7007"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch nxsbom CLI
+        run: |
+          set -e
+          mkdir -p bin
+          curl -fSL -o bin/nxsbom "${NXRADAR_API_URL:-$NXRADAR_UPLOAD_URL}/api/v1/agents/download/cli-linux-x64"
+          chmod +x bin/nxsbom
+          ./bin/nxsbom --version
+      - name: Register pipeline (first run)
+        run: |
+          set -e
+          export PATH="$PWD/bin:$PATH"
+          export NXRADAR_CONFIG_DIR="$HOME/.nxradar/72OO5R9SCO"
+          mkdir -p "$NXRADAR_CONFIG_DIR"
+          if [ ! -f "$NXRADAR_CONFIG_DIR/secrets.json" ]; then
+            echo "First run — registering this pipeline…"
+            nxsbom register --token "$NXRADAR_PROV_TOKEN" \
+              --config-dir "$NXRADAR_CONFIG_DIR" --server "$NXRADAR_UPLOAD_URL"
+          else
+            echo "Already registered — reusing persisted key."
+          fi
+      - name: SBOM scan
+        run: |
+          set -e
+          export PATH="$PWD/bin:$PATH"
+          export NXRADAR_CONFIG_DIR="$HOME/.nxradar/72OO5R9SCO"
+          # --app-version — version strategy: Commit SHA.
+          # Falls through to the next available source: a version that repeats is
+          # refused by the per-version SBOM lock (HTTP 409) on the next build.
+          COMMIT=$(printf '%s' "${GITHUB_SHA:-}" | cut -c1-7)
+          APP_VERSION="${COMMIT:-build-${GITHUB_RUN_NUMBER:-0}}"
+          IDEM=$(printf '%s' "nxsbom-${GITHUB_RUN_ID:-0}-${GITHUB_RUN_ATTEMPT:-1}-$APP_VERSION" | tr -c 'A-Za-z0-9_.:-' '-' | cut -c1-64)
+          nxsbom cicd scan --path . \
+            --app-version "$APP_VERSION" \
+            --commit "${GITHUB_SHA:-}" \
+            --branch "${GITHUB_REF_NAME:-main}" \
+            --idempotency-key "$IDEM" \
+            --format junit --output nxradar-sbom.xml \
+            --format json  --output nxradar-decision.json
+      - name: Upload NxRadar artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nxradar-sbom
+          path: |
+            nxradar-sbom.xml
+            nxradar-decision.json
+          if-no-files-found: ignore
