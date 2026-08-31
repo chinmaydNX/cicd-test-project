@@ -30,7 +30,9 @@ jobs:
           # refused by the per-version SBOM lock (HTTP 409) on the next build.
           COMMIT=$(printf '%s' "${GITHUB_SHA:-}" | cut -c1-7)
           APP_VERSION="${COMMIT:-build-${GITHUB_RUN_NUMBER:-0}}"
-          IDEM=$(printf '%s' "nxsbom-${GITHUB_RUN_NUMBER:-0}-$APP_VERSION" | tr -c 'A-Za-z0-9_.:-' '-' | cut -c1-64)
+          # RUN_ATTEMPT / RUN_ID change on "Re-run"; RUN_NUMBER alone does not
+          # (same 409 as Bitbucket reusing BITBUCKET_BUILD_NUMBER).
+          IDEM=$(printf '%s' "nxsbom-${GITHUB_RUN_ID:-0}-${GITHUB_RUN_ATTEMPT:-1}-$APP_VERSION" | tr -c 'A-Za-z0-9_.:-' '-' | cut -c1-64)
           nxsbom cicd scan --path . \
             --app-version "$APP_VERSION" \
             --commit "${GITHUB_SHA:-}" \
